@@ -5,12 +5,8 @@ import requests
 import time
 import json
 import matplotlib.pyplot as plt
-import folium
-from folium.plugins import MarkerCluster
-from streamlit_folium import folium_static
 from datetime import datetime
 import math
-from io import BytesIO
 
 st.set_page_config(
     page_title="YB Tracking Analyzer",
@@ -60,7 +56,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return bearing
 
 # Fonction pour télécharger les données YB Tracking
-def fetch_yb_data(race_id, max_retries=3, chunk_size=1024*1024):
+def fetch_yb_data(race_id, max_retries=3):
     """
     Télécharge les données YB Tracking pour une course spécifique
     """
@@ -96,97 +92,68 @@ def fetch_yb_data(race_id, max_retries=3, chunk_size=1024*1024):
                     st.error(f"Échec du téléchargement de {name} après {max_retries} tentatives: {str(e)}")
                     data[name] = None
     
-    # Téléchargement du fichier binaire AllPositions3
-    all_positions_url = f"https://cf.yb.tl/BIN/{race_id}/AllPositions3"
-    progress_text = "Téléchargement de l'historique des positions..."
-    progress_bar = st.progress(0, text=progress_text)
+    # Simulation des données de positions pour la démo
+    # Dans une application réelle, vous devriez implémenter le téléchargement et le décodage de AllPositions3
+    st.info("Note: Cette démo utilise des données simulées pour l'historique des positions. Dans une application réelle, implémentez le décodage complet du fichier binaire AllPositions3.")
     
-    try:
-        # Téléchargement par morceaux pour éviter les timeouts
-        response = requests.get(all_positions_url, stream=True, timeout=60)
-        response.raise_for_status()
-        
-        # Obtenir la taille totale si disponible
-        total_size = int(response.headers.get('content-length', 0))
-        
-        # Lecture par morceaux
-        chunks = []
-        downloaded = 0
-        
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            if chunk:
-                chunks.append(chunk)
-                downloaded += len(chunk)
-                if total_size:
-                    progress = min(downloaded / total_size, 1.0)
-                    progress_bar.progress(progress, text=f"Téléchargement: {downloaded/1024/1024:.1f} Mo")
-        
-        # Vérification que les données sont complètes
-        binary_data = b''.join(chunks)
-        if len(binary_data) < 1000:  # Taille minimale attendue
-            st.error("Données incomplètes reçues pour l'historique des positions")
-            data["AllPositions"] = None
-        else:
-            # Décodage des données binaires
-            data["AllPositions"] = decode_all_positions(binary_data)
-            progress_bar.progress(1.0, text="Historique des positions téléchargé et décodé avec succès")
-    
-    except Exception as e:
-        st.error(f"Erreur lors du téléchargement de l'historique des positions: {str(e)}")
-        data["AllPositions"] = None
+    data["AllPositions"] = {
+        "boats": generate_simulated_positions(data.get("RaceSetup"), data.get("LatestPositions"))
+    }
     
     return data
 
-# Fonction pour décoder le fichier binaire AllPositions3
-def decode_all_positions(binary_data):
+# Fonction pour générer des positions simulées
+def generate_simulated_positions(race_setup, latest_positions):
     """
-    Version simplifiée du décodage des positions
-    Cette fonction est une approximation - dans une application réelle,
-    utilisez l'outil decyb ou une implémentation complète du décodage
+    Génère des positions simulées pour la démo
     """
-    # Simuler le décodage pour la démo
-    # Dans une application réelle, implémentez le décodage complet
-    st.info("Note: Cette démo utilise des données simulées pour l'historique des positions. Dans une application réelle, implémentez le décodage complet du fichier binaire.")
+    simulated_boats = []
     
-    # Création de données simulées basées sur LatestPositions
-    # Dans une application réelle, décodez correctement le fichier binaire
-    return {
-        "boats": [
-            {
-                "id": "boat1",
-                "name": "MAORI III",
-                "positions": [
-                    {"timestamp": 1621234567000, "lat": 50.7, "lon": -1.2},
-                    {"timestamp": 1621238167000, "lat": 50.72, "lon": -1.25},
-                    {"timestamp": 1621241767000, "lat": 50.74, "lon": -1.3},
-                    {"timestamp": 1621245367000, "lat": 50.76, "lon": -1.35},
-                    {"timestamp": 1621248967000, "lat": 50.78, "lon": -1.4},
-                ]
-            },
-            {
-                "id": "boat2",
-                "name": "CORA",
-                "positions": [
-                    {"timestamp": 1621234567000, "lat": 50.71, "lon": -1.21},
-                    {"timestamp": 1621238167000, "lat": 50.73, "lon": -1.26},
-                    {"timestamp": 1621241767000, "lat": 50.75, "lon": -1.31},
-                    {"timestamp": 1621245367000, "lat": 50.77, "lon": -1.36},
-                    {"timestamp": 1621248967000, "lat": 50.79, "lon": -1.41},
-                ]
-            },
-            {
-                "id": "boat3",
-                "name": "F35 EXPRESS",
-                "positions": [
-                    {"timestamp": 1621234567000, "lat": 50.69, "lon": -1.19},
-                    {"timestamp": 1621238167000, "lat": 50.71, "lon": -1.24},
-                    {"timestamp": 1621241767000, "lat": 50.73, "lon": -1.29},
-                    {"timestamp": 1621245367000, "lat": 50.75, "lon": -1.34},
-                    {"timestamp": 1621248967000, "lat": 50.77, "lon": -1.39},
-                ]
-            }
-        ]
-    }
+    if not race_setup or not latest_positions:
+        return simulated_boats
+    
+    # Utiliser les bateaux de RaceSetup et leurs dernières positions connues
+    if "boats" in race_setup and "boats" in latest_positions:
+        for boat_setup in race_setup["boats"]:
+            boat_id = boat_setup.get("id")
+            boat_name = boat_setup.get("name")
+            
+            if boat_id and boat_name:
+                # Trouver la dernière position connue
+                last_pos = None
+                for boat_pos in latest_positions["boats"]:
+                    if boat_pos.get("id") == boat_id:
+                        last_pos = boat_pos
+                        break
+                
+                if last_pos and "lat" in last_pos and "lon" in last_pos:
+                    # Générer des positions simulées autour de la dernière position connue
+                    positions = []
+                    base_lat = last_pos["lat"]
+                    base_lon = last_pos["lon"]
+                    base_time = int(time.time() * 1000) - 24 * 60 * 60 * 1000  # 24h avant
+                    
+                    for i in range(10):  # 10 positions par bateau
+                        time_offset = i * 3 * 60 * 60 * 1000  # 3h entre chaque position
+                        lat_offset = (np.random.random() - 0.5) * 0.1
+                        lon_offset = (np.random.random() - 0.5) * 0.1
+                        
+                        positions.append({
+                            "timestamp": base_time + time_offset,
+                            "lat": base_lat + lat_offset * i/10,
+                            "lon": base_lon + lon_offset * i/10
+                        })
+                    
+                    # Calculer les vitesses et caps
+                    positions = calculate_speed_and_bearing(positions)
+                    
+                    simulated_boats.append({
+                        "id": boat_id,
+                        "name": boat_name,
+                        "positions": positions
+                    })
+    
+    return simulated_boats
 
 # Fonction pour extraire les classes de bateaux
 def extract_boat_classes(race_setup):
@@ -285,59 +252,6 @@ def calculate_speed_and_bearing(positions):
         positions[0]["bearing"] = positions[1]["bearing"]
     
     return positions
-
-# Fonction pour créer une carte avec les trajectoires des bateaux
-def create_map(boats_data, selected_boats):
-    """
-    Crée une carte Folium avec les trajectoires des bateaux sélectionnés
-    """
-    # Trouver les coordonnées moyennes pour centrer la carte
-    all_lats = []
-    all_lons = []
-    
-    for boat in boats_data:
-        if boat["name"] in selected_boats and "positions" in boat:
-            for pos in boat["positions"]:
-                all_lats.append(pos["lat"])
-                all_lons.append(pos["lon"])
-    
-    if not all_lats or not all_lons:
-        # Coordonnées par défaut si aucune donnée
-        center_lat, center_lon = 50.7, -1.2
-    else:
-        center_lat = sum(all_lats) / len(all_lats)
-        center_lon = sum(all_lons) / len(all_lons)
-    
-    # Créer la carte
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=10)
-    
-    # Ajouter les trajectoires et marqueurs pour chaque bateau
-    for boat in boats_data:
-        if boat["name"] in selected_boats and "positions" in boat:
-            # Générer une couleur unique pour chaque bateau
-            color = "#" + format(hash(boat["name"]) % 0xFFFFFF, '06x')
-            
-            # Créer la trajectoire
-            points = [[pos["lat"], pos["lon"]] for pos in boat["positions"]]
-            if points:
-                folium.PolyLine(
-                    points,
-                    color=color,
-                    weight=3,
-                    opacity=0.8,
-                    tooltip=boat["name"]
-                ).add_to(m)
-                
-                # Ajouter un marqueur pour la dernière position
-                last_pos = boat["positions"][-1]
-                folium.Marker(
-                    [last_pos["lat"], last_pos["lon"]],
-                    popup=f"{boat['name']}<br>Vitesse: {last_pos.get('speed', 0):.1f} nœuds<br>Cap: {last_pos.get('bearing', 0):.1f}°",
-                    tooltip=boat["name"],
-                    icon=folium.Icon(color="blue", icon="ship", prefix="fa")
-                ).add_to(m)
-    
-    return m
 
 # Fonction pour créer un graphique de vitesse
 def create_speed_chart(boats_data, selected_boats):
@@ -517,28 +431,17 @@ def main():
                                 # Trouver les positions de ce bateau
                                 for boat in all_positions.get("boats", []):
                                     if boat.get("id") == boat_info["id"] or boat.get("name") == boat_info["name"]:
-                                        # Calculer les vitesses et caps
-                                        positions = calculate_speed_and_bearing(boat.get("positions", []))
-                                        
                                         boats_data.append({
                                             "id": boat_info["id"],
                                             "name": boat_info["name"],
-                                            "positions": positions
+                                            "positions": boat.get("positions", [])
                                         })
                                         break
                     
                     # Afficher les analyses en onglets
-                    tab1, tab2, tab3, tab4 = st.tabs(["Carte", "Vitesses", "Caps", "Comparaison"])
+                    tab1, tab2, tab3 = st.tabs(["Vitesses", "Caps", "Comparaison"])
                     
                     with tab1:
-                        st.subheader("Carte des trajectoires")
-                        if boats_data:
-                            map_chart = create_map(boats_data, selected_boats)
-                            folium_static(map_chart, width=800, height=500)
-                        else:
-                            st.warning("Pas de données de position disponibles pour les bateaux sélectionnés")
-                    
-                    with tab2:
                         st.subheader("Graphique des vitesses")
                         if boats_data:
                             speed_chart = create_speed_chart(boats_data, selected_boats)
@@ -546,7 +449,7 @@ def main():
                         else:
                             st.warning("Pas de données de vitesse disponibles pour les bateaux sélectionnés")
                     
-                    with tab3:
+                    with tab2:
                         st.subheader("Graphique des caps")
                         if boats_data:
                             bearing_chart = create_bearing_chart(boats_data, selected_boats)
@@ -554,7 +457,7 @@ def main():
                         else:
                             st.warning("Pas de données de cap disponibles pour les bateaux sélectionnés")
                     
-                    with tab4:
+                    with tab3:
                         st.subheader("Tableau comparatif")
                         if boats_data:
                             comparison_table = create_comparison_table(boats_data, selected_boats)
