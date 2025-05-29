@@ -59,9 +59,28 @@ def safe_get_binary(url: str, max_retries: int = 3, backoff: int = 2):
 # -----------------------------------------------------------------------------
 
 def decode_all_positions(binary_data: bytes):
-    """Décodage simplifié – à remplacer par decyb pour la prod."""
-    st.info("Décodage simulé du binaire AllPositions3 – remplacez par decyb.")
-    return {"boats": []}  # renvoie vide si pas implémenté
+    """Essaie de décompresser le binaire AllPositions3.
+    1. Certains fichiers sont simplement gzippés (header GZIP « 1F 8B »)
+    2. D'autres sont zlib+JSON – on tente les deux.
+    Si tout échoue → liste vide, mais on trace l'erreur.
+    """
+    import gzip, zlib, json, io
+
+    # Tentative GZIP ------------------------------------------------------
+    try:
+        if binary_data[:2] == b"":
+            txt = gzip.decompress(binary_data).decode("utf-8", errors="ignore")
+            return json.loads(txt)
+    except Exception as e:
+        st.info(f"GZIP failed ({e}) – trying zlib …")
+
+    # Tentative zlib/raw DEFLATE -----------------------------------------
+    try:
+        txt = zlib.decompress(binary_data, wbits=16 + zlib.MAX_WBITS).decode("utf-8", errors="ignore")
+        return json.loads(txt)
+    except Exception as e:
+        st.warning(f"Décodage du binaire impossible : {e}")
+        return {"boats": []}
 
 # -----------------------------------------------------------------------------
 # Reconstruction de LatestPositions si besoin
