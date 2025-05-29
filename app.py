@@ -60,12 +60,144 @@ def safe_get_binary(url: str, max_retries: int = 3, backoff: int = 2):
 # Décodage du binaire AllPositions3 (portage Python du C fourni)
 # -----------------------------------------------------------------------------
 
-def _read(fmt: str, buf: bytes, offset: int):
-    size = struct.calcsize(fmt)
-    return struct.unpack(fmt, buf[offset:offset + size])[0], offset + size
+# -----------------------------------------------------------------------------
+# Lecture binaire robuste ------------------------------------------------------
+# -----------------------------------------------------------------------------
 
+def _read(fmt: str, buf: bytes, offset: int):
+    """Extrait une valeur struct.unpack et renvoie (valeur, new_offset).
+    Si le tampon n'a pas assez d'octets, lève ValueError pour qu'on puisse
+    arrêter proprement la lecture au lieu de crasher."""
+    size = struct.calcsize(fmt)
+    if offset + size > len(buf):
+        raise ValueError("buffer underrun")
+    return struct.unpack_from(fmt, buf, offset)[0], offset + size
+
+
+# -----------------------------------------------------------------------------
+# Décodage du binaire AllPositions3  ------------------------------------------
+# -----------------------------------------------------------------------------
 
 def decode_all_positions(binary: bytes) -> dict:
+    """Décodage du fichier AllPositions3 → dict JSON.
+
+    Le format varie légèrement d'une course à l'autre :
+      * parfois le fichier est un GZIP contenant du binaire ;
+      * parfois c'est un zlib brut ;
+      * parfois c'est déjà un JSON compressé ;
+      * Et, pour les très vieilles courses, un JSON non compressé.
+
+    Cette fonction tente dans l'ordre :
+      1. Décompression si entête GZIP (0x1F8B) ou zlib (0x78..) ;
+      2. Si après décompression le premier caractère est "{", on suppose
+         qu'il s'agit d'un JSON et on le renvoie directement ;
+      3. Sinon, on applique le décodage binaire (portage de decyb.c).
+    """
+    # ----------------------------------------------------- Étape 1 : décompress
+    if binary[:2] == b"":  # GZIP
+        import gzip
+        binary = gzip.decompress(binary)
+    elif binary[:2] in (b"x", b"x", b"xÚ"):
+        import zlib
+        binary = zlib.decompress(binary)
+
+    # --------------------------------------------------------- Étape 2 : JSON ?
+    if binary[:1] in (b"{", b"["):
+        try:
+            return json.loads(binary.decode())
+        except Exception as e:
+            st.warning(f"AllPositions3 semble être du JSON, mais son parsing a échoué : {e}")
+            return {}
+
+    # ----------------------------------------------------- Étape 3 : binaire ---
+    buf = memoryview(binary)  # évite copies
+    pos = 0
+
+    try:
+        flags, pos = _read("!B", buf, pos)
+    except ValueError:
+        st.error("AllPositions3 vide ou corrompu (pas d'en‑tête)")
+        return {}
+
+    a = bool(flags & 1)   # alt
+    s = bool(flags & 2)   # dtf
+    n = bool(flags & 4)   # lap
+    r = bool(flags & 8)   # performance pc
+
+    ref_time, pos = _read("!I", buf, pos)  # uint32 big-endian
+
+    boats = []
+    try:
+        while pos < len(buf):
+            boat_id, pos   = _read("!H", buf, pos)
+            n_points, pos  = _read("!H", buf, pos)
+
+            positions = []
+            prev = {"lat": 0, "lon": 0, "at": 0, "dtf": 0, "pc": 0.0, "alt": 0, "lap": 0}
+
+            for _ in range(n_points):
+                header_byte, pos = _read("!B", buf, pos)
+                moment = {}
+
+                if header_byte & 0x80:  # Delta encoded
+                    w , pos = _read("!H", buf, pos)
+                    y , pos = _read("!h", buf, pos)
+                    M , pos = _read("!h", buf, pos)
+
+                    if a:
+                        alt , pos = _read("!h", buf, pos)
+                        moment["alt"] = alt
+                    if s:
+                        f , pos = _read("!h", buf, pos)
+                        moment["dtf"] = prev["dtf"] + f
+                        if n:
+                            lap , pos = _read("!B", buf, pos)
+                            moment["lap"] = lap
+                    if r:
+                        pc_delta , pos = _read("!h", buf, pos)
+                        moment["pc"] = prev["pc"] + pc_delta / 32000.0
+
+                    w &= 0x7FFF  # 15 bits
+                    moment["lat"] = prev["lat"] + y
+                    moment["lon"] = prev["lon"] + M
+                    moment["at"]  = prev["at"]  - w
+
+                else:  # Point absolu
+                    T , pos = _read("!I", buf, pos)
+                    b , pos = _read("!i", buf, pos)
+                    L , pos = _read("!i", buf, pos)
+
+                    if a:
+                        alt , pos = _read("!h", buf, pos)
+                        moment["alt"] = alt
+                    if s:
+                        x , pos = _read("!i", buf, pos)
+                        moment["dtf"] = x
+                        if n:
+                            lap , pos = _read("!B", buf, pos)
+                            moment["lap"] = lap
+                    if r:
+                        pc_val , pos = _read("!i", buf, pos)
+                        moment["pc"] = pc_val / 21000000.0
+
+                    moment["lat"] = b
+                    moment["lon"] = L
+                    moment["at"]  = ref_time + T
+
+                # Mise à l'échelle et MAJ prev
+                moment["lat"] /= 1e5
+                moment["lon"] /= 1e5
+                positions.append(moment)
+                for k in prev:
+                    prev[k] = moment.get(k, prev[k])
+
+            boats.append({"id": boat_id, "positions": positions})
+    except ValueError:
+        st.warning("Arrêt du décodage : données tronquées (buffer underrun)")
+    except struct.error as e:
+        st.warning(f"Décodage interrompu : {e}")
+
+    return {"boats": boats}(binary: bytes) -> dict:
     """Décodage complet du fichier AllPositions3 → dict JSON.
     Portage direct du fichier *decyb.c* fourni (MIT) vers Python.
     Structure retournée : {"boats": [{"id": int, "positions": [ ... ]}]}"""
