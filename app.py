@@ -1,18 +1,16 @@
 import streamlit as st
 import requests
 import time
-import math
 import struct
 import json
 from datetime import datetime
 import pandas as pd
-import folium
+
 from folium.plugins import MarkerCluster
+import folium
 from streamlit_folium import folium_static
 
-# ------------------------------------------------------------
-# Configuration Streamlit
-# ------------------------------------------------------------
+# ----------------- CONFIG -----------------
 
 st.set_page_config(
     page_title="YB Tracking Analyzer",
@@ -21,68 +19,56 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ------------------------------------------------------------
-# Constantes & HTTP helpers
-# ------------------------------------------------------------
-
 HEADERS = {"User-Agent": "YB-Analyzer/1.0"}
 GZIP_MAGIC = b"\x1f\x8b"
 ZLIB_MAGICS = (b"\x78\x01", b"\x78\x9c", b"\x78\xda")
 
+# --------------- HTTP utils --------------
+
 @st.cache_data(ttl=300, show_spinner=False)
-def safe_get_json(url: str, max_retries: int = 3, backoff: int = 2):
-    """GET JSON avec retries. Renvoie None si 500 ou erreur."""
-    for attempt in range(1, max_retries + 1):
+def safe_get_json(url: str, retries: int = 3):
+    backoff = 2
+    for i in range(retries):
         try:
             r = requests.get(url, timeout=30, headers=HEADERS)
             if r.status_code == 500:
                 return None
             r.raise_for_status()
             return r.json()
-        except Exception as e:
-            if attempt == max_retries:
-                st.error(f"{url.split('/')[-1]} indisponible : {e}")
+        except Exception:
+            if i == retries - 1:
                 return None
-            time.sleep(backoff ** attempt)
+            time.sleep(backoff ** i)
 
 @st.cache_data(ttl=300, show_spinner=False)
-def safe_get_binary(url: str, max_retries: int = 3, backoff: int = 2):
-    """Télécharge un fichier binaire (AllPositions3)."""
-    for attempt in range(1, max_retries + 1):
+def safe_get_binary(url: str, retries: int = 3):
+    backoff = 2
+    for i in range(retries):
         try:
             r = requests.get(url, timeout=60, headers=HEADERS)
             if r.status_code == 500:
                 return None
             r.raise_for_status()
             return r.content
-        except Exception as e:
-            if attempt == max_retries:
-                st.error(f"{url.split('/')[-1]} indisponible : {e}")
+        except Exception:
+            if i == retries - 1:
                 return None
-            time.sleep(backoff ** attempt)
+            time.sleep(backoff ** i)
 
-# ------------------------------------------------------------
-# Lecture binaire utilitaire
-# ------------------------------------------------------------
+# -------- Binary helper --------
 
-def _read(fmt: str, buf: memoryview, offset: int):
-    """Lit `fmt` à `offset` dans buf et renvoie (valeur, new_offset).
-    Lève ValueError si dépassement de tampon."""
+def _read(fmt: str, buf: memoryview, pos: int):
     size = struct.calcsize(fmt)
-    if offset + size > len(buf):
+    if pos + size > len(buf):
         raise ValueError("buffer underrun")
-    return struct.unpack_from(fmt, buf, offset)[0], offset + size
+    return struct.unpack_from(fmt, buf, pos)[0], pos + size
 
-# ------------------------------------------------------------
-# Décodage AllPositions3  (portage léger de decyb.c)
-# ------------------------------------------------------------
+# -------- Decoder -------------
 
 def decode_all_positions(binary: bytes) -> dict:
-    """Décodage complet du fichier AllPositions3 → dict JSON.
-    Tente d'abord la décompression (gzip/zlib), puis essaye JSON direct,
-    sinon parse le format binaire delta‑encodé inspiré de decyb.c."""
+    """Return {"boats": [...]}. Handle gzip/zlib/raw/JSON."""
 
-    # 1) décompression éventuelle -------------------------------------------
+    # decompress
     if binary[:2] == GZIP_MAGIC:
         import gzip
         binary = gzip.decompress(binary)
@@ -90,189 +76,134 @@ def decode_all_positions(binary: bytes) -> dict:
         import zlib
         binary = zlib.decompress(binary)
 
-    # 2) JSON direct ---------------------------------------------------------
+    # already JSON?
     if binary[:1] in (b"{", b"["):
         try:
             return json.loads(binary.decode())
-        except Exception as e:
-            st.warning(f"AllPositions3 semble être du JSON, échec parse : {e}")
+        except Exception:
             return {}
 
-    # 3) Format binaire ------------------------------------------------------
     buf = memoryview(binary)
     pos = 0
-
     try:
         flags, pos = _read("!B", buf, pos)
     except ValueError:
-        st.error("AllPositions3 vide ou corrompu (pas d'en‑tête)")
         return {}
 
-    # Décodage des flags
-    has_alt = bool(flags & 1)
-    has_dtf = bool(flags & 2)
-    has_lap = bool(flags & 4)
-    has_pc  = bool(flags & 8)
+    has_alt = flags & 1
+    has_dtf = flags & 2
+    has_lap = flags & 4
+    has_pc  = flags & 8
 
-    ref_time, pos = _read("!I", buf, pos)  # uint32
+    ref_time, pos = _read("!I", buf, pos)
 
     boats = []
     try:
         while pos < len(buf):
-            boat_id, pos   = _read("!H", buf, pos)
-            n_points, pos  = _read("!H", buf, pos)
-
+            boat_id, pos = _read("!H", buf, pos)
+            n_pts,   pos = _read("!H", buf, pos)
             positions = []
             prev = {"lat": 0, "lon": 0, "at": 0, "dtf": 0, "pc": 0.0, "alt": 0, "lap": 0}
-
-            for _ in range(n_points):
+            for _ in range(n_pts):
                 header, pos = _read("!B", buf, pos)
-                moment = {}
-
-                if header & 0x80:  # delta‑encoded --------------------------------
+                m = {}
+                if header & 0x80:
                     w , pos = _read("!H", buf, pos)
                     dy, pos = _read("!h", buf, pos)
                     dx, pos = _read("!h", buf, pos)
-
                     if has_alt:
                         alt, pos = _read("!h", buf, pos)
-                        moment["alt"] = alt
+                        m["alt"] = alt
                     if has_dtf:
                         d_dtf, pos = _read("!h", buf, pos)
-                        moment["dtf"] = prev["dtf"] + d_dtf
+                        m["dtf"] = prev["dtf"] + d_dtf
                         if has_lap:
                             lap, pos = _read("!B", buf, pos)
-                            moment["lap"] = lap
+                            m["lap"] = lap
                     if has_pc:
                         d_pc, pos = _read("!h", buf, pos)
-                        moment["pc"] = prev["pc"] + d_pc / 32000.0
-
+                        m["pc"] = prev["pc"] + d_pc / 32000.0
                     w &= 0x7FFF
-                    moment["lat"] = prev["lat"] + dy
-                    moment["lon"] = prev["lon"] + dx
-                    moment["at"]  = prev["at"]  - w
-                else:  # point absolu -----------------------------------------
+                    m["lat"] = prev["lat"] + dy
+                    m["lon"] = prev["lon"] + dx
+                    m["at"]  = prev["at"] - w
+                else:
                     T , pos = _read("!I", buf, pos)
-                    b , pos = _read("!i", buf, pos)
-                    L , pos = _read("!i", buf, pos)
-
+                    lat_i, pos = _read("!i", buf, pos)
+                    lon_i, pos = _read("!i", buf, pos)
                     if has_alt:
                         alt, pos = _read("!h", buf, pos)
-                        moment["alt"] = alt
+                        m["alt"] = alt
                     if has_dtf:
                         dtf, pos = _read("!i", buf, pos)
-                        moment["dtf"] = dtf
+                        m["dtf"] = dtf
                         if has_lap:
                             lap, pos = _read("!B", buf, pos)
-                            moment["lap"] = lap
+                            m["lap"] = lap
                     if has_pc:
                         pc_val, pos = _read("!i", buf, pos)
-                        moment["pc"] = pc_val / 21000000.0
-
-                    moment["lat"] = b
-                    moment["lon"] = L
-                    moment["at"]  = ref_time + T
-
-                # Mise à l'échelle & stockage --------------------------------
-                moment["lat"] /= 1e5
-                moment["lon"] /= 1e5
-                positions.append(moment)
-
-                # maj prev
-                for k, v in moment.items():
+                        m["pc"] = pc_val / 21000000.0
+                    m["lat"] = lat_i
+                    m["lon"] = lon_i
+                    m["at"]  = ref_time + T
+                m["lat"] /= 1e5
+                m["lon"] /= 1e5
+                positions.append(m)
+                for k, v in m.items():
                     prev[k] = v
-
             boats.append({"id": boat_id, "positions": positions})
-
-    except (ValueError, struct.error) as e:
+    except ValueError as e:
         st.warning(f"Décodage interrompu : {e}")
-
     return {"boats": boats}
 
-# ------------------------------------------------------------
-# Helpers LatestPositions
-# ------------------------------------------------------------
+# ------- build latest ---------
 
-def build_latest_from_all_positions(all_positions: dict):
+def build_latest(all_pos: dict):
     latest = {"positions": []}
-    for boat in all_positions.get("boats", []):
-        if boat["positions"]:
-            last = boat["positions"][-1].copy()
-            last["boatID"] = boat["id"]
+    for b in all_pos.get("boats", []):
+        if b["positions"]:
+            last = b["positions"][-1].copy()
+            last["boatID"] = b["id"]
             latest["positions"].append(last)
     return latest if latest["positions"] else None
 
-# ------------------------------------------------------------
-# Téléchargement principal
-# ------------------------------------------------------------
+# ------- fetch ---------------
 
-@st.cache_data(ttl=300, show_spinner=False)
-def fetch_yb_data(race_id: str):
-    data = {}
-    base_json = f"https://cf.yb.tl/JSON/{race_id}"
-    urls = {
-        "RaceSetup":       f"{base_json}/RaceSetup",
-        "Leaderboard":     f"{base_json}/leaderboard",
-        "LatestPositions": f"{base_json}/LatestPositions",
-    }
-
-    with st.spinner("Téléchargement des JSON …"):
-        for name, url in urls.items():
-            data[name] = safe_get_json(url)
-            if data[name] is None:
-                st.info(f"{name} indisponible – HTTP 500 (ou 404) renvoyé par YB.")
-
-    # Binaire -----------------------------------------------------------------
-    bin_url = f"https://cf.yb.tl/BIN/{race_id}/AllPositions3"
-    with st.spinner("Téléchargement du binaire AllPositions3 …"):
-        binary = safe_get_binary(bin_url)
-        if binary:
-            data["AllPositions"] = decode_all_positions(binary)
-        else:
-            data["AllPositions"] = None
-            st.info("AllPositions3 indisponible – course à venir ou ID erroné.")
-
-    # Reconstruit LatestPositions si besoin -----------------------------------
+@st.cache_data(ttl=300)
+def fetch(race_id: str):
+    base = f"https://cf.yb.tl/JSON/{race_id}"
+    data = {name: safe_get_json(f"{base}/{name}") for name in ["RaceSetup", "leaderboard", "LatestPositions"]}
+    bin_file = safe_get_binary(f"https://cf.yb.tl/BIN/{race_id}/AllPositions3")
+    data["AllPositions"] = decode_all_positions(bin_file) if bin_file else None
     if data.get("LatestPositions") is None and data.get("AllPositions"):
-        rebuilt = build_latest_from_all_positions(data["AllPositions"])
+        rebuilt = build_latest(data["AllPositions"])
         if rebuilt:
             data["LatestPositions"] = rebuilt
-            st.success("LatestPositions reconstruit à partir du binaire.")
-
     return data
 
-# ------------------------------------------------------------
-# Interface Streamlit
-# ------------------------------------------------------------
+# ---------- UI ---------------
 
 def main():
     st.title("YB Tracking Analyzer")
     st.write("Analysez les données de courses YB Tracking")
-
     with st.sidebar:
-        race_id = st.text_input("Identifiant de la course", value="dgbr2025")
+        race_id = st.text_input("Identifiant de la course", "dgbr2025")
         if st.button("Télécharger les données"):
-            if not race_id:
-                st.error("Veuillez saisir un identifiant de course.")
+            if race_id.strip():
+                st.session_state.data = fetch(race_id.strip())
             else:
-                st.session_state["data"] = fetch_yb_data(race_id.strip())
-
-    # Résumé ------------------------------------------------------------------
+                st.error("Veuillez saisir un identifiant.")
     if "data" in st.session_state:
-        d = st.session_state["data"]
-        if d.get("RaceSetup") is None:
-            st.warning("RaceSetup absent : identifiant incorrect ou course pas encore publiée.")
+        d = st.session_state.data
+        if not d.get("RaceSetup"):
+            st.warning("RaceSetup manquant – ID erroné ou course non publiée.")
             return
-        st.success("Données principales chargées !")
-
+        st.success("Données principales chargées !")
         if d.get("LatestPositions"):
-            latest_df = pd.DataFrame(d["LatestPositions"]["positions"])
-            st.write("**Dernières positions disponibles :**", latest_df.head())
+            st.dataframe(pd.DataFrame(d["LatestPositions"]["positions"]).head())
         else:
-            st.info("Aucune position disponible pour le moment.")
-
-        st.write("TODO : Ajoutez vos propres analyses (carte, graphes, vitesses, etc.) …")
-
+            st.info("Aucune position disponible.")
+        # TODO: add map/graphs
 
 if __name__ == "__main__":
     main()
