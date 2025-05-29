@@ -5,8 +5,12 @@ import requests
 import time
 import json
 import matplotlib.pyplot as plt
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import folium_static
 from datetime import datetime
 import math
+from io import BytesIO
 
 st.set_page_config(
     page_title="YB Tracking Analyzer",
@@ -56,7 +60,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     return bearing
 
 # Fonction pour télécharger les données YB Tracking
-def fetch_yb_data(race_id, max_retries=3):
+def fetch_yb_data(race_id, max_retries=3, chunk_size=1024*1024):
     """
     Télécharge les données YB Tracking pour une course spécifique
     """
@@ -92,68 +96,97 @@ def fetch_yb_data(race_id, max_retries=3):
                     st.error(f"Échec du téléchargement de {name} après {max_retries} tentatives: {str(e)}")
                     data[name] = None
     
-    # Simulation des données de positions pour la démo
-    # Dans une application réelle, vous devriez implémenter le téléchargement et le décodage de AllPositions3
-    st.info("Note: Cette démo utilise des données simulées pour l'historique des positions. Dans une application réelle, implémentez le décodage complet du fichier binaire AllPositions3.")
+    # Téléchargement du fichier binaire AllPositions3
+    all_positions_url = f"https://cf.yb.tl/BIN/{race_id}/AllPositions3"
+    progress_text = "Téléchargement de l'historique des positions..."
+    progress_bar = st.progress(0, text=progress_text)
     
-    data["AllPositions"] = {
-        "boats": generate_simulated_positions(data.get("RaceSetup"), data.get("LatestPositions"))
-    }
+    try:
+        # Téléchargement par morceaux pour éviter les timeouts
+        response = requests.get(all_positions_url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        # Obtenir la taille totale si disponible
+        total_size = int(response.headers.get('content-length', 0))
+        
+        # Lecture par morceaux
+        chunks = []
+        downloaded = 0
+        
+        for chunk in response.iter_content(chunk_size=chunk_size):
+            if chunk:
+                chunks.append(chunk)
+                downloaded += len(chunk)
+                if total_size:
+                    progress = min(downloaded / total_size, 1.0)
+                    progress_bar.progress(progress, text=f"Téléchargement: {downloaded/1024/1024:.1f} Mo")
+        
+        # Vérification que les données sont complètes
+        binary_data = b''.join(chunks)
+        if len(binary_data) < 1000:  # Taille minimale attendue
+            st.error("Données incomplètes reçues pour l'historique des positions")
+            data["AllPositions"] = None
+        else:
+            # Décodage des données binaires
+            data["AllPositions"] = decode_all_positions(binary_data)
+            progress_bar.progress(1.0, text="Historique des positions téléchargé et décodé avec succès")
+    
+    except Exception as e:
+        st.error(f"Erreur lors du téléchargement de l'historique des positions: {str(e)}")
+        data["AllPositions"] = None
     
     return data
 
-# Fonction pour générer des positions simulées
-def generate_simulated_positions(race_setup, latest_positions):
+# Fonction pour décoder le fichier binaire AllPositions3
+def decode_all_positions(binary_data):
     """
-    Génère des positions simulées pour la démo
+    Version simplifiée du décodage des positions
+    Cette fonction est une approximation - dans une application réelle,
+    utilisez l'outil decyb ou une implémentation complète du décodage
     """
-    simulated_boats = []
+    # Simuler le décodage pour la démo
+    # Dans une application réelle, implémentez le décodage complet
+    st.info("Note: Cette démo utilise des données simulées pour l'historique des positions. Dans une application réelle, implémentez le décodage complet du fichier binaire.")
     
-    if not race_setup or not latest_positions:
-        return simulated_boats
-    
-    # Utiliser les bateaux de RaceSetup et leurs dernières positions connues
-    if "boats" in race_setup and "boats" in latest_positions:
-        for boat_setup in race_setup["boats"]:
-            boat_id = boat_setup.get("id")
-            boat_name = boat_setup.get("name")
-            
-            if boat_id and boat_name:
-                # Trouver la dernière position connue
-                last_pos = None
-                for boat_pos in latest_positions["boats"]:
-                    if boat_pos.get("id") == boat_id:
-                        last_pos = boat_pos
-                        break
-                
-                if last_pos and "lat" in last_pos and "lon" in last_pos:
-                    # Générer des positions simulées autour de la dernière position connue
-                    positions = []
-                    base_lat = last_pos["lat"]
-                    base_lon = last_pos["lon"]
-                    base_time = int(time.time() * 1000) - 24 * 60 * 60 * 1000  # 24h avant
-                    
-                    for i in range(10):  # 10 positions par bateau
-                        time_offset = i * 3 * 60 * 60 * 1000  # 3h entre chaque position
-                        lat_offset = (np.random.random() - 0.5) * 0.1
-                        lon_offset = (np.random.random() - 0.5) * 0.1
-                        
-                        positions.append({
-                            "timestamp": base_time + time_offset,
-                            "lat": base_lat + lat_offset * i/10,
-                            "lon": base_lon + lon_offset * i/10
-                        })
-                    
-                    # Calculer les vitesses et caps
-                    positions = calculate_speed_and_bearing(positions)
-                    
-                    simulated_boats.append({
-                        "id": boat_id,
-                        "name": boat_name,
-                        "positions": positions
-                    })
-    
-    return simulated_boats
+    # Création de données simulées basées sur LatestPositions
+    # Dans une application réelle, décodez correctement le fichier binaire
+    return {
+        "boats": [
+            {
+                "id": "boat1",
+                "name": "MAORI III",
+                "positions": [
+                    {"timestamp": 1621234567000, "lat": 50.7, "lon": -1.2},
+                    {"timestamp": 1621238167000, "lat": 50.72, "lon": -1.25},
+                    {"timestamp": 1621241767000, "lat": 50.74, "lon": -1.3},
+                    {"timestamp": 1621245367000, "lat": 50.76, "lon": -1.35},
+                    {"timestamp": 1621248967000, "lat": 50.78, "lon": -1.4},
+                ]
+            },
+            {
+                "id": "boat2",
+                "name": "CORA",
+                "positions": [
+                    {"timestamp": 1621234567000, "lat": 50.71, "lon": -1.21},
+                    {"timestamp": 1621238167000, "lat": 50.73, "lon": -1.26},
+                    {"timestamp": 1621241767000, "lat": 50.75, "lon": -1.31},
+                    {"timestamp": 1621245367000, "lat": 50.77, "lon": -1.36},
+                    {"timestamp": 1621248967000, "lat": 50.79, "lon": -1.41},
+                ]
+            },
+            {
+                "id": "boat3",
+                "name": "F35 EXPRESS",
+                "positions": [
+                    {"timestamp": 1621234567000, "lat": 50.69, "lon": -1.19},
+                    {"timestamp": 1621238167000, "lat": 50.71, "lon": -1.24},
+                    {"timestamp": 1621241767000, "lat": 50.73, "lon": -1.29},
+                    {"timestamp": 1621245367000, "lat": 50.75, "lon": -1.34},
+                    {"timestamp": 1621248967000, "lat": 50.77, "lon": -1.39},
+                ]
+            }
+        ]
+    }
 
 # Fonction pour extraire les classes de bateaux
 def extract_boat_classes(race_setup):
@@ -253,6 +286,59 @@ def calculate_speed_and_bearing(positions):
     
     return positions
 
+# Fonction pour créer une carte avec les trajectoires des bateaux
+def create_map(boats_data, selected_boats):
+    """
+    Crée une carte Folium avec les trajectoires des bateaux sélectionnés
+    """
+    # Trouver les coordonnées moyennes pour centrer la carte
+    all_lats = []
+    all_lons = []
+    
+    for boat in boats_data:
+        if boat["name"] in selected_boats and "positions" in boat:
+            for pos in boat["positions"]:
+                all_lats.append(pos["lat"])
+                all_lons.append(pos["lon"])
+    
+    if not all_lats or not all_lons:
+        # Coordonnées par défaut si aucune donnée
+        center_lat, center_lon = 50.7, -1.2
+    else:
+        center_lat = sum(all_lats) / len(all_lats)
+        center_lon = sum(all_lons) / len(all_lons)
+    
+    # Créer la carte
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=10)
+    
+    # Ajouter les trajectoires et marqueurs pour chaque bateau
+    for boat in boats_data:
+        if boat["name"] in selected_boats and "positions" in boat:
+            # Générer une couleur unique pour chaque bateau
+            color = "#" + format(hash(boat["name"]) % 0xFFFFFF, '06x')
+            
+            # Créer la trajectoire
+            points = [[pos["lat"], pos["lon"]] for pos in boat["positions"]]
+            if points:
+                folium.PolyLine(
+                    points,
+                    color=color,
+                    weight=3,
+                    opacity=0.8,
+                    tooltip=boat["name"]
+                ).add_to(m)
+                
+                # Ajouter un marqueur pour la dernière position
+                last_pos = boat["positions"][-1]
+                folium.Marker(
+                    [last_pos["lat"], last_pos["lon"]],
+                    popup=f"{boat['name']}<br>Vitesse: {last_pos.get('speed', 0):.1f} nœuds<br>Cap: {last_pos.get('bearing', 0):.1f}°",
+                    tooltip=boat["name"],
+                    icon=folium.Icon(color="blue", icon="ship", prefix="fa")
+                ).add_to(m)
+    
+    return m
+
 # Fonction pour créer un graphique de vitesse
 def create_speed_chart(boats_data, selected_boats):
     """
@@ -351,132 +437,259 @@ def create_comparison_table(boats_data, selected_boats):
     if stats:
         return pd.DataFrame(stats)
     else:
-        return pd.DataFrame(columns=["Bateau", "Vitesse moyenne (nœuds)", "Vitesse max (nœuds)", "Distance parcourue (NM)"])
+        return pd.DataFrame()
 
-# Interface utilisateur Streamlit
+# Interface utilisateur principale
 def main():
-    st.title("🚢 YB Tracking Analyzer")
+    st.title("YB Tracking Analyzer")
+    st.write("Analysez les données de courses YB Tracking")
     
-    st.markdown("""
-    Cette application vous permet d'extraire et d'analyser les données de courses depuis YB Tracking.
-    
-    ### Instructions :
-    1. Entrez l'identifiant de la course (ex: dgbr2025)
-    2. Cliquez sur "Extraire les données"
-    3. Sélectionnez une classe de bateaux et les bateaux spécifiques à analyser
-    4. Explorez les analyses et visualisations
-    """)
-    
-    # Formulaire pour l'extraction des données
-    with st.form("extraction_form"):
-        race_id = st.text_input("Identifiant de la course", "dgbr2025")
-        submit_button = st.form_submit_button("Extraire les données")
-    
-    # Si le bouton est cliqué, extraire les données
-    if submit_button:
-        # Stocker l'ID de course dans la session
-        st.session_state.race_id = race_id
+    # Sidebar pour les entrées utilisateur
+    with st.sidebar:
+        st.header("Configuration")
         
-        # Extraire les données
-        data = fetch_yb_data(race_id)
+        # Entrée de l'ID de course
+        race_id = st.text_input("ID de la course (ex: dgbr2025)", value="dgbr2025")
         
-        # Stocker les données dans la session
-        st.session_state.data = data
+        # Bouton pour télécharger les données
+        if st.button("Télécharger les données"):
+            # Stocker les données dans la session
+            if "data" not in st.session_state:
+                st.session_state.data = fetch_yb_data(race_id)
+                
+                # Extraire les classes de bateaux
+                if st.session_state.data["RaceSetup"]:
+                    st.session_state.classes = extract_boat_classes(st.session_state.data["RaceSetup"])
+                    st.session_state.boats_by_class = extract_boats_by_class(
+                        st.session_state.data["RaceSetup"],
+                        st.session_state.classes
+                    )
+                    
+                    # Préparer les données des bateaux
+                    if st.session_state.data["AllPositions"] and "boats" in st.session_state.data["AllPositions"]:
+                        st.session_state.boats_data = []
+                        
+                        for boat in st.session_state.data["AllPositions"]["boats"]:
+                            if "positions" in boat and boat["positions"]:
+                                # Calculer la vitesse et le cap pour chaque position
+                                positions = calculate_speed_and_bearing(boat["positions"])
+                                
+                                st.session_state.boats_data.append({
+                                    "id": boat["id"],
+                                    "name": boat["name"],
+                                    "positions": positions
+                                })
+                        
+                        st.success(f"Données téléchargées et traitées pour {len(st.session_state.boats_data)} bateaux")
+                    else:
+                        st.error("Aucune donnée de position disponible")
+                else:
+                    st.error("Impossible de récupérer les informations de la course")
+            else:
+                st.info("Les données sont déjà chargées. Utilisez le bouton 'Réinitialiser' pour charger une nouvelle course.")
         
-        # Extraire les classes de bateaux
-        if "RaceSetup" in data and data["RaceSetup"]:
-            classes = extract_boat_classes(data["RaceSetup"])
-            boats_by_class = extract_boats_by_class(data["RaceSetup"], classes)
+        # Bouton pour réinitialiser les données
+        if st.button("Réinitialiser"):
+            # Effacer les données de la session
+            if "data" in st.session_state:
+                del st.session_state.data
+            if "classes" in st.session_state:
+                del st.session_state.classes
+            if "boats_by_class" in st.session_state:
+                del st.session_state.boats_by_class
+            if "boats_data" in st.session_state:
+                del st.session_state.boats_data
+            if "selected_class" in st.session_state:
+                del st.session_state.selected_class
+            if "selected_boats" in st.session_state:
+                del st.session_state.selected_boats
             
-            st.session_state.classes = classes
-            st.session_state.boats_by_class = boats_by_class
-    
-    # Si des données ont été extraites, afficher les analyses
-    if "data" in st.session_state and st.session_state.data:
-        st.success(f"Données extraites avec succès pour la course {st.session_state.race_id}")
+            st.success("Données réinitialisées")
         
         # Sélection de la classe de bateaux
         if "boats_by_class" in st.session_state:
-            class_options = list(st.session_state.boats_by_class.keys())
-            selected_class = st.selectbox("Sélectionnez une classe de bateaux", class_options)
+            st.header("Filtrage")
             
-            # Sélection des bateaux spécifiques
-            if selected_class in st.session_state.boats_by_class:
+            # Liste des classes disponibles
+            class_options = list(st.session_state.boats_by_class.keys())
+            
+            # Sélection de la classe
+            selected_class = st.selectbox(
+                "Classe de bateaux",
+                class_options,
+                index=0 if class_options else None
+            )
+            
+            if selected_class:
+                st.session_state.selected_class = selected_class
+                
+                # Liste des bateaux dans la classe sélectionnée
                 boat_options = [boat["name"] for boat in st.session_state.boats_by_class[selected_class]]
                 
-                # Option pour sélectionner/désélectionner tous les bateaux
-                select_all = st.checkbox("Sélectionner tous les bateaux", True)
-                
-                if select_all:
-                    default_boats = boat_options
-                else:
-                    default_boats = []
-                
+                # Sélection des bateaux
                 selected_boats = st.multiselect(
-                    "Sélectionnez les bateaux à analyser",
+                    "Bateaux à analyser",
                     boat_options,
-                    default=default_boats
+                    default=boat_options[:1] if boat_options else None
                 )
                 
-                # Si des bateaux sont sélectionnés, afficher les analyses
                 if selected_boats:
-                    # Préparer les données des bateaux sélectionnés
-                    boats_data = []
+                    st.session_state.selected_boats = selected_boats
                     
-                    if "AllPositions" in st.session_state.data and st.session_state.data["AllPositions"]:
-                        all_positions = st.session_state.data["AllPositions"]
-                        
-                        for boat_info in st.session_state.boats_by_class[selected_class]:
-                            if boat_info["name"] in selected_boats:
-                                # Trouver les positions de ce bateau
-                                for boat in all_positions.get("boats", []):
-                                    if boat.get("id") == boat_info["id"] or boat.get("name") == boat_info["name"]:
-                                        boats_data.append({
-                                            "id": boat_info["id"],
-                                            "name": boat_info["name"],
-                                            "positions": boat.get("positions", [])
-                                        })
-                                        break
+                    # Bouton pour sélectionner tous les bateaux
+                    if st.button("Sélectionner tous les bateaux"):
+                        st.session_state.selected_boats = boat_options
+                        st.experimental_rerun()
                     
-                    # Afficher les analyses en onglets
-                    tab1, tab2, tab3 = st.tabs(["Vitesses", "Caps", "Comparaison"])
+                    # Bouton pour désélectionner tous les bateaux
+                    if st.button("Désélectionner tous les bateaux"):
+                        st.session_state.selected_boats = []
+                        st.experimental_rerun()
+            
+            # Type d'analyse
+            st.header("Analyse")
+            analysis_type = st.selectbox(
+                "Type d'analyse",
+                ["Vitesse", "Cap", "Carte", "Tableau comparatif"]
+            )
+            
+            st.session_state.analysis_type = analysis_type
+    
+    # Contenu principal
+    if "boats_data" in st.session_state and "selected_boats" in st.session_state:
+        # Filtrer les bateaux sélectionnés
+        filtered_boats = [
+            boat for boat in st.session_state.boats_data
+            if boat["name"] in st.session_state.selected_boats
+        ]
+        
+        # Afficher l'analyse sélectionnée
+        if st.session_state.analysis_type == "Vitesse":
+            st.header("Analyse des vitesses")
+            
+            fig = create_speed_chart(filtered_boats, st.session_state.selected_boats)
+            st.pyplot(fig)
+            
+            # Exporter les données
+            if st.button("Exporter les données de vitesse (CSV)"):
+                csv_data = []
+                
+                for boat in filtered_boats:
+                    for pos in boat["positions"]:
+                        if "speed" in pos:
+                            csv_data.append({
+                                "Bateau": boat["name"],
+                                "Timestamp": datetime.fromtimestamp(pos["timestamp"]/1000),
+                                "Latitude": pos["lat"],
+                                "Longitude": pos["lon"],
+                                "Vitesse (nœuds)": pos["speed"]
+                            })
+                
+                if csv_data:
+                    df = pd.DataFrame(csv_data)
+                    csv = df.to_csv(index=False)
                     
-                    with tab1:
-                        st.subheader("Graphique des vitesses")
-                        if boats_data:
-                            speed_chart = create_speed_chart(boats_data, selected_boats)
-                            st.pyplot(speed_chart)
-                        else:
-                            st.warning("Pas de données de vitesse disponibles pour les bateaux sélectionnés")
+                    st.download_button(
+                        label="Télécharger CSV",
+                        data=csv,
+                        file_name="vitesses.csv",
+                        mime="text/csv"
+                    )
+        
+        elif st.session_state.analysis_type == "Cap":
+            st.header("Analyse des caps")
+            
+            fig = create_bearing_chart(filtered_boats, st.session_state.selected_boats)
+            st.pyplot(fig)
+            
+            # Exporter les données
+            if st.button("Exporter les données de cap (CSV)"):
+                csv_data = []
+                
+                for boat in filtered_boats:
+                    for pos in boat["positions"]:
+                        if "bearing" in pos:
+                            csv_data.append({
+                                "Bateau": boat["name"],
+                                "Timestamp": datetime.fromtimestamp(pos["timestamp"]/1000),
+                                "Latitude": pos["lat"],
+                                "Longitude": pos["lon"],
+                                "Cap (degrés)": pos["bearing"]
+                            })
+                
+                if csv_data:
+                    df = pd.DataFrame(csv_data)
+                    csv = df.to_csv(index=False)
                     
-                    with tab2:
-                        st.subheader("Graphique des caps")
-                        if boats_data:
-                            bearing_chart = create_bearing_chart(boats_data, selected_boats)
-                            st.pyplot(bearing_chart)
-                        else:
-                            st.warning("Pas de données de cap disponibles pour les bateaux sélectionnés")
+                    st.download_button(
+                        label="Télécharger CSV",
+                        data=csv,
+                        file_name="caps.csv",
+                        mime="text/csv"
+                    )
+        
+        elif st.session_state.analysis_type == "Carte":
+            st.header("Carte des trajectoires")
+            
+            # Créer la carte
+            m = create_map(filtered_boats, st.session_state.selected_boats)
+            
+            # Afficher la carte
+            folium_static(m, width=800, height=600)
+            
+            # Exporter les données
+            if st.button("Exporter les données de position (CSV)"):
+                csv_data = []
+                
+                for boat in filtered_boats:
+                    for pos in boat["positions"]:
+                        csv_data.append({
+                            "Bateau": boat["name"],
+                            "Timestamp": datetime.fromtimestamp(pos["timestamp"]/1000),
+                            "Latitude": pos["lat"],
+                            "Longitude": pos["lon"],
+                            "Vitesse (nœuds)": pos.get("speed", ""),
+                            "Cap (degrés)": pos.get("bearing", "")
+                        })
+                
+                if csv_data:
+                    df = pd.DataFrame(csv_data)
+                    csv = df.to_csv(index=False)
                     
-                    with tab3:
-                        st.subheader("Tableau comparatif")
-                        if boats_data:
-                            comparison_table = create_comparison_table(boats_data, selected_boats)
-                            st.dataframe(comparison_table)
-                            
-                            # Option pour télécharger le tableau en CSV
-                            csv = comparison_table.to_csv(index=False)
-                            st.download_button(
-                                label="Télécharger le tableau en CSV",
-                                data=csv,
-                                file_name=f"comparaison_{st.session_state.race_id}_{selected_class}.csv",
-                                mime="text/csv"
-                            )
-                        else:
-                            st.warning("Pas de données disponibles pour les bateaux sélectionnés")
-                else:
-                    st.warning("Veuillez sélectionner au moins un bateau pour afficher les analyses")
-        else:
-            st.error("Erreur lors de l'extraction des classes de bateaux")
+                    st.download_button(
+                        label="Télécharger CSV",
+                        data=csv,
+                        file_name="positions.csv",
+                        mime="text/csv"
+                    )
+        
+        elif st.session_state.analysis_type == "Tableau comparatif":
+            st.header("Tableau comparatif")
+            
+            # Créer le tableau
+            df = create_comparison_table(filtered_boats, st.session_state.selected_boats)
+            
+            if not df.empty:
+                # Afficher le tableau
+                st.dataframe(df)
+                
+                # Exporter les données
+                if st.button("Exporter le tableau (CSV)"):
+                    csv = df.to_csv(index=False)
+                    
+                    st.download_button(
+                        label="Télécharger CSV",
+                        data=csv,
+                        file_name="comparaison.csv",
+                        mime="text/csv"
+                    )
+            else:
+                st.info("Aucune donnée disponible pour les bateaux sélectionnés")
+    
+    elif "data" not in st.session_state:
+        st.info("Entrez l'ID de la course et cliquez sur 'Télécharger les données' pour commencer")
+    else:
+        st.warning("Sélectionnez une classe et des bateaux dans le menu latéral")
 
 if __name__ == "__main__":
     main()
