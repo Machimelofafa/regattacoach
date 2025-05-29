@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import folium_static
+import json
 
 st.set_page_config(
     page_title="YB Tracking Analyzer",
@@ -55,29 +56,38 @@ def safe_get_binary(url: str, max_retries: int = 3, backoff: int = 2):
             time.sleep(backoff ** attempt)
 
 # -----------------------------------------------------------------------------
-# Décodage – démo simplifiée
+# Décodage – version robuste
 # -----------------------------------------------------------------------------
 
 def decode_all_positions(binary_data: bytes):
-    """Essaie de décompresser le binaire AllPositions3.
-    1. Certains fichiers sont simplement gzippés (header GZIP « 1F 8B »)
-    2. D'autres sont zlib+JSON – on tente les deux.
-    Si tout échoue → liste vide, mais on trace l'erreur.
+    """Décodage du fichier AllPositions3.
+
+    1. Tentative GZIP (header 1F 8B)
+    2. Tentative zlib (header 78 9C ou équivalent)
+    3. Tentative JSON brut
+
+    Renvoie toujours un dict – au pire {"boats": []}.
     """
-    import gzip, zlib, json, io
+    import gzip, zlib
 
-    # Tentative GZIP ------------------------------------------------------
+    # --- GZIP ----------------------------------------------------------------
     try:
-        if binary_data[:2] == b"":
-            txt = gzip.decompress(binary_data).decode("utf-8", errors="ignore")
-            return json.loads(txt)
-    except Exception as e:
-        st.info(f"GZIP failed ({e}) – trying zlib …")
+        if binary_data[:2] == b"\x1f\x8b":
+            text = gzip.decompress(binary_data).decode("utf-8", errors="ignore")
+            return json.loads(text)
+    except Exception:
+        pass  # on enchaîne sur zlib
 
-    # Tentative zlib/raw DEFLATE -----------------------------------------
+    # --- zlib ----------------------------------------------------------------
     try:
-        txt = zlib.decompress(binary_data, wbits=16 + zlib.MAX_WBITS).decode("utf-8", errors="ignore")
-        return json.loads(txt)
+        text = zlib.decompress(binary_data).decode("utf-8", errors="ignore")
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # --- JSON brut -----------------------------------------------------------
+    try:
+        return json.loads(binary_data.decode("utf-8", errors="ignore"))
     except Exception as e:
         st.warning(f"Décodage du binaire impossible : {e}")
         return {"boats": []}
@@ -102,7 +112,7 @@ def build_latest_from_all_positions(all_positions: dict):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_yb_data(race_id: str):
-    data = {}
+    data: dict[str, any] = {}
     urls = {
         "RaceSetup":   f"https://cf.yb.tl/JSON/{race_id}/RaceSetup",
         "Leaderboard": f"https://cf.yb.tl/JSON/{race_id}/leaderboard",
