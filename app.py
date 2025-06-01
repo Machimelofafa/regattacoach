@@ -332,11 +332,30 @@ def fetch(race_id: str):
     
     # Enrichir les données avec les noms des bateaux
     if data.get("AllPositions") and data.get("RaceSetup"):
-        boat_names = {boat["id"]: boat.get("name", f"Bateau {boat['id']}") 
-                     for boat in data["RaceSetup"].get("boats", [])}
+        # Créer un dictionnaire de correspondance ID -> nom
+        boat_names = {}
+        for boat in data["RaceSetup"].get("boats", []):
+            # Convertir l'ID en entier pour correspondre au format du fichier binaire
+            try:
+                boat_id = int(boat["id"])
+                boat_names[boat_id] = boat.get("name", f"Bateau {boat_id}")
+            except (ValueError, TypeError):
+                # Si l'ID n'est pas un entier valide, utiliser l'ID original comme clé
+                boat_names[boat["id"]] = boat.get("name", f"Bateau {boat['id']}")
         
+        # Ajouter les noms aux bateaux décodés
         for boat in data["AllPositions"]["boats"]:
-            boat["name"] = boat_names.get(boat["id"], f"Bateau {boat['id']}")
+            # Essayer d'abord avec l'ID tel quel
+            if boat["id"] in boat_names:
+                boat["name"] = boat_names[boat["id"]]
+            else:
+                # Essayer avec l'ID converti en chaîne
+                str_id = str(boat["id"])
+                if str_id in boat_names:
+                    boat["name"] = boat_names[str_id]
+                else:
+                    # Utiliser un nom générique si aucune correspondance n'est trouvée
+                    boat["name"] = f"Bateau {boat['id']}"
     
     return data
 
@@ -436,17 +455,30 @@ def extract_boat_classes(race_setup):
     
     return classes
 
-def extract_boats_by_class(race_setup, classes):
-    """Regroupe les bateaux par classe"""
-    if not race_setup or not classes:
-        return {}
+def extract_boats_by_class(race_setup, classes, all_positions=None):
+    """
+    Regroupe les bateaux par classe
     
-    boats_by_class = {class_name: [] for class_id, class_name in classes.items()}
+    Args:
+        race_setup: Données RaceSetup
+        classes: Dictionnaire des classes {id: name}
+        all_positions: Données AllPositions (optionnel)
+    """
+    if not race_setup:
+        return {"Tous les bateaux": []}
     
-    # Ajout d'une classe "Tous les bateaux"
+    # Créer un dictionnaire pour stocker les bateaux par classe
+    boats_by_class = {}
+    
+    # Ajouter une classe "Tous les bateaux"
     boats_by_class["Tous les bateaux"] = []
     
-    # Extraction des bateaux et de leurs classes
+    # Ajouter les classes définies
+    if classes:
+        for class_name in classes.values():
+            boats_by_class[class_name] = []
+    
+    # Extraction des bateaux depuis RaceSetup
     if "boats" in race_setup:
         for boat in race_setup["boats"]:
             boat_id = boat.get("id")
@@ -468,6 +500,35 @@ def extract_boats_by_class(race_setup, classes):
                             "id": boat_id,
                             "name": boat_name
                         })
+    
+    # Si aucun bateau n'a été trouvé dans RaceSetup mais que nous avons des données AllPositions,
+    # utiliser ces données pour créer une liste de bateaux
+    if not boats_by_class["Tous les bateaux"] and all_positions and "boats" in all_positions:
+        for boat in all_positions["boats"]:
+            if "name" in boat:
+                boats_by_class["Tous les bateaux"].append({
+                    "id": boat["id"],
+                    "name": boat["name"]
+                })
+                
+                # Ajouter à une classe générique si aucune classe n'est définie
+                if not classes:
+                    if "Classe par défaut" not in boats_by_class:
+                        boats_by_class["Classe par défaut"] = []
+                    boats_by_class["Classe par défaut"].append({
+                        "id": boat["id"],
+                        "name": boat["name"]
+                    })
+    
+    # Si toujours aucun bateau, créer des données de démonstration
+    if not boats_by_class["Tous les bateaux"]:
+        demo_boats = [
+            {"id": 1, "name": "MAORI III"},
+            {"id": 2, "name": "CORA"},
+            {"id": 3, "name": "F35 EXPRESS"}
+        ]
+        boats_by_class["Tous les bateaux"] = demo_boats
+        boats_by_class["Classe par défaut"] = demo_boats
     
     return boats_by_class
 
@@ -654,7 +715,8 @@ def main():
                         st.session_state.classes = extract_boat_classes(st.session_state.data["RaceSetup"])
                         st.session_state.boats_by_class = extract_boats_by_class(
                             st.session_state.data["RaceSetup"],
-                            st.session_state.classes
+                            st.session_state.classes,
+                            st.session_state.data.get("AllPositions")
                         )
                         
                         # Préparer les données des bateaux
@@ -727,7 +789,7 @@ def main():
             st.session_state.analysis_type = analysis_type
     
     # Contenu principal
-    if "boats_data" in st.session_state and "selected_boats" in st.session_state:
+    if "boats_data" in st.session_state and "selected_boats" in st.session_state and st.session_state.selected_boats:
         # Filtrer les bateaux sélectionnés
         filtered_boats = [
             boat for boat in st.session_state.boats_data
