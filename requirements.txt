@@ -5,3 +5,4 @@ requests>=2.31.0
 matplotlib>=3.8.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
+pytest>=7.4.0
