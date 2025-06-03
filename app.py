@@ -25,7 +25,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     lat2_rad = math.radians(lat2)
     lon2_rad = math.radians(lon2)
     
-    # Différence de longitude et latitude
+    # Différences de longitude et de latitude
     dlon = lon2_rad - lon1_rad
     dlat = lat2_rad - lat1_rad
     
